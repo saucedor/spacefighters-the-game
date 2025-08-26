@@ -1,0 +1,21 @@
+@"
+[Ll]ibrary/
+[Tt]emp/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Mm]emoryCaptures/
+obj/
+[Bb]in/
+.vs/
+*.csproj
+*.sln
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+sysinfo.txt
+.DS_Store
+Thumbs.db
+"@ | Out-File -Encoding utf8 .gitignore
