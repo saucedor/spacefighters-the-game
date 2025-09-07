@@ -4842,7 +4842,7 @@ GameObject:
   - component: {fileID: 1097031286348149302}
   - component: {fileID: 7734368496949923242}
   m_Layer: 0
-  m_Name: VFX_Fire
+  m_Name: firePrefab
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
