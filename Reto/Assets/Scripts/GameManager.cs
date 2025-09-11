@@ -1,97 +1,191 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Networking;
 
-// --- DATA CLASSES ---
-[System.Serializable] public class PoiData { public int[] pos; public string status; }
-[System.Serializable] public class DoorData { public int[] pos; public string state; }
-[System.Serializable] public class TilesData {
-    public List<int[]> fire;
-    public List<int[]> smoke;
-    public List<PoiData> poi;
-    public List<int[]> walls;
-    public List<DoorData> doors;
-}
-[System.Serializable] public class AgentData {
+// -----------------
+// Clases para JSON
+// -----------------
+[System.Serializable]
+public class AgentData {
     public int id;
-    public int[] pos;
+    public int[] pos;  // [row, col]
     public bool carrying;
     public string carrying_status;
 }
-[System.Serializable] public class StateData {
-    public int turn;
+
+[System.Serializable]
+public class PoiData {
+    public int[] pos;  // [row, col]
     public string status;
-    public List<AgentData> agents;
-    public TilesData tiles;
 }
 
+[System.Serializable]
+public class DoorData {
+    public int[][] pos;
+    public string state;
+}
+
+[System.Serializable]
+public class GameState {
+    public int turn;
+    public string status;
+    public int rescued;
+    public int lost;
+    public int damage;
+    public AgentData[] agents;
+    public PoiData[] pois;
+    public int[][] fire;
+    public int[][] smoke;
+    public int[][][] walls;
+    public DoorData[] doors;
+}
+
+// -----------------
+// GameManager
+// -----------------
 public class GameManager : MonoBehaviour {
-    private string[] stateFiles = {
-        "States/state_0",
-        "States/state_1",
-        "States/state_2",
-        "States/state_3",
-        "States/state_4",
-        "States/state_5"
-    };
+    [Header("Prefabs")]
+    public GameObject astronautPrefab;
+    public GameObject poiPrefab;
+    public GameObject firePrefab;
+    public GameObject smokePrefab;
+    public GameObject wallPrefab;
 
-    public GameObject firePrefab, smokePrefab, poiPrefab;
-    public BoardController board;  
+    [Header("Configuración de Simulación")]
+    [Tooltip("Elige la estrategia de los astronautas: reasoned o random")]
+    public string strategy = "reasoned";
+    [Tooltip("Segundos entre turnos (0.1 = muy rápido, 1.0 = tiempo real)")]
+    public float speed = 0.5f;
 
-    private int currentStep = 0;
-    private List<GameObject> markers = new List<GameObject>();
+    private Dictionary<int, GameObject> agentObjects = new Dictionary<int, GameObject>();
+    private List<GameObject> fireObjects = new List<GameObject>();
+    private List<GameObject> smokeObjects = new List<GameObject>();
+    private List<GameObject> poiObjects = new List<GameObject>();
+    private List<GameObject> wallObjects = new List<GameObject>();
+
+    // Diccionario de tiles por (row,col)
+    private Dictionary<(int,int), Tile> tileLookup = new Dictionary<(int,int), Tile>();
 
     void Start() {
-        LoadStep(0);
+        BuildTileDictionary();
+        StartCoroutine(StartSimulation());
+        InvokeRepeating(nameof(RequestState), 1f, 1f);
     }
 
-    void Update() {
-        if (Input.GetKeyDown(KeyCode.Space)) {
-            currentStep = (currentStep + 1) % stateFiles.Length;
-            LoadStep(currentStep);
-        }
-    }
-
-    void LoadStep(int step) {
-        TextAsset asset = Resources.Load<TextAsset>(stateFiles[step]);
-        if (asset == null) {
-            Debug.LogError("No se encontró el archivo: " + stateFiles[step]);
-            return;
-        }
-
-        StateData state = JsonUtility.FromJson<StateData>(asset.text);
-        Debug.Log($"Turno {state.turn}, Estado: {state.status}");
-
-        ClearOldMarkers();
-
-        // 🔥 Fuego
-        if (state.tiles.fire != null) {
-            foreach (var pos in state.tiles.fire) {
-                Vector3 worldPos = board.GetWorldPosition(pos[1], pos[0]); 
-                markers.Add(Instantiate(firePrefab, worldPos, Quaternion.identity, board.transform));
+    void BuildTileDictionary() {
+        tileLookup.Clear();
+        GameObject tilesRoot = GameObject.Find("Tiles");
+        if (tilesRoot != null) {
+            foreach (Tile tile in tilesRoot.GetComponentsInChildren<Tile>()) {
+                tileLookup[(tile.row, tile.col)] = tile;
             }
-        }
-
-        // 💨 Humo
-        if (state.tiles.smoke != null) {
-            foreach (var pos in state.tiles.smoke) {
-                Vector3 worldPos = board.GetWorldPosition(pos[1], pos[0]);
-                markers.Add(Instantiate(smokePrefab, worldPos, Quaternion.identity, board.transform));
-            }
-        }
-
-        // ❓ POI
-        if (state.tiles.poi != null) {
-            foreach (var p in state.tiles.poi) {
-                Vector3 worldPos = board.GetWorldPosition(p.pos[1], p.pos[0]);
-                markers.Add(Instantiate(poiPrefab, worldPos, Quaternion.identity, board.transform));
-            }
+            Debug.Log($"✅ Tiles cargados en diccionario: {tileLookup.Count}");
+        } else {
+            Debug.LogError("❌ No encontré el GameObject 'Tiles' en la escena.");
         }
     }
 
-    void ClearOldMarkers() {
-        foreach (var obj in markers) {
-            Destroy(obj);
+    Tile FindTile(int row, int col) {
+        if (tileLookup.TryGetValue((row, col), out Tile tile)) {
+            return tile;
         }
-        markers.Clear();
+        Debug.LogWarning($"⚠️ Tile no encontrado en diccionario: ({row},{col})");
+        return null;
+    }
+
+    IEnumerator StartSimulation() {
+        string json = "{\"strategy\":\"" + strategy + "\",\"speed\":" + speed.ToString("0.0") + "}";
+        var request = new UnityWebRequest("http://127.0.0.1:5000/config", "POST");
+        byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(json);
+        request.uploadHandler = new UploadHandlerRaw(bodyRaw);
+        request.downloadHandler = new DownloadHandlerBuffer();
+        request.SetRequestHeader("Content-Type", "application/json");
+
+        yield return request.SendWebRequest();
+
+        if (request.result == UnityWebRequest.Result.Success) {
+            Debug.Log("Config OK: " + request.downloadHandler.text);
+        } else {
+            Debug.LogError("Error config: " + request.error);
+        }
+    }
+
+    void RequestState() {
+        StartCoroutine(GetState());
+    }
+
+    IEnumerator GetState() {
+        var request = UnityWebRequest.Get("http://127.0.0.1:5000/all");
+        yield return request.SendWebRequest();
+
+        if (request.result == UnityWebRequest.Result.Success) {
+            string json = request.downloadHandler.text;
+            GameState state = JsonUtility.FromJson<GameState>(json);
+            UpdateScene(state);
+        } else {
+            Debug.LogError("Error state: " + request.error);
+        }
+    }
+
+    void ClearObjects(List<GameObject> objects) {
+        foreach (var obj in objects) Destroy(obj);
+        objects.Clear();
+    }
+
+    void UpdateScene(GameState state) {
+        // --- Astronautas ---
+        foreach (AgentData agent in state.agents) {
+            Tile tile = FindTile(agent.pos[0], agent.pos[1]);
+            if (tile == null) continue;
+
+            if (!agentObjects.ContainsKey(agent.id)) {
+                var obj = Instantiate(astronautPrefab, tile.transform.position, Quaternion.identity);
+                agentObjects[agent.id] = obj;
+                Debug.Log($"👨‍🚀 Spawn agente {agent.id} en {tile.row},{tile.col}");
+            } else {
+                agentObjects[agent.id].transform.position = tile.transform.position;
+            }
+        }
+
+        // --- Fuego ---
+        ClearObjects(fireObjects);
+        foreach (int[] pos in state.fire) {
+            Tile tile = FindTile(pos[0], pos[1]);
+            if (tile == null) continue;
+            fireObjects.Add(Instantiate(firePrefab, tile.transform.position, Quaternion.identity));
+        }
+
+        // --- Humo ---
+        ClearObjects(smokeObjects);
+        foreach (int[] pos in state.smoke) {
+            Tile tile = FindTile(pos[0], pos[1]);
+            if (tile == null) continue;
+            smokeObjects.Add(Instantiate(smokePrefab, tile.transform.position, Quaternion.identity));
+        }
+
+        // --- POIs ---
+        ClearObjects(poiObjects);
+        foreach (PoiData poi in state.pois) {
+            Tile tile = FindTile(poi.pos[0], poi.pos[1]);
+            if (tile == null) continue;
+            poiObjects.Add(Instantiate(poiPrefab, tile.transform.position, Quaternion.identity));
+        }
+        
+        // --- Paredes ---
+        // Ya no instanciamos, solo actualizamos los muros existentes
+        WallTile[] allWalls = FindObjectsOfType<WallTile>();
+
+        foreach (var wallData in state.walls) {
+            int[] a = wallData[0];
+            int[] b = wallData[1];
+
+            foreach (WallTile wall in allWalls) {
+                if (wall.Matches(a, b)) {
+                    wall.SetState("damaged"); // o "destroyed", según venga de la simulación
+                }
+            }
+        }
+
     }
 }
