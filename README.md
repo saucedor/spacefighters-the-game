@@ -7,6 +7,9 @@ conda activate mesa_project
 # Desactivar entorno
 conda deactivate 
 
+# Correr el servidor Flask
+python server.py (debe estar activado conda)
+
 # Instalar Mesa y sus dependencias de visualización
 conda install -c conda-forge mesa
 pip install --pre mesa[viz]  # Para SolaraViz
